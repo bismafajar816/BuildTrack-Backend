@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_company_id ON users(company_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
--- Placeholder for the next phase (projects / sites), kept minimal for now
+-- Construction sites / projects
 CREATE TABLE IF NOT EXISTS projects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -39,6 +39,22 @@ CREATE TABLE IF NOT EXISTS projects (
   created_by UUID REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Daily site updates: either a text note or a photo (with optional caption)
+CREATE TABLE IF NOT EXISTS daily_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  created_by UUID REFERENCES users(id),
+  entry_type VARCHAR(10) NOT NULL CHECK (entry_type IN ('text', 'image')),
+  content TEXT,
+  image_path VARCHAR(500),
+  entry_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_reports_project_id ON daily_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_daily_reports_entry_date ON daily_reports(entry_date);
 `;
 
 (async () => {
