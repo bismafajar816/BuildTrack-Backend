@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const pool = require("../config/db");
+const { summarizeProject } = require("../services/aiSummaryService");
 
 /**
  * Creates a daily update for a project. Body is multipart/form-data:
@@ -131,4 +132,41 @@ async function deleteReport(req, res) {
   }
 }
 
-module.exports = { createReport, getReportsByProject, deleteReport };
+/**
+ * Generates an AI summary of a project's daily updates using GLM-4V-9B.
+ * Sends all text notes plus (up to 6) site photos to the model.
+ */
+async function getProjectSummary(req, res) {
+  const { projectId } = req.params;
+  const { companyId } = req.user;
+
+  try {
+    const projCheck = await pool.query(
+      "SELECT id, name, location FROM projects WHERE id = $1 AND company_id = $2",
+      [projectId, companyId]
+    );
+    if (projCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    const reportsResult = await pool.query(
+      `SELECT entry_type, content, image_path, entry_date
+       FROM daily_reports
+       WHERE project_id = $1
+       ORDER BY entry_date DESC, created_at DESC`,
+      [projectId]
+    );
+
+    if (reportsResult.rows.length === 0) {
+      return res.status(400).json({ message: "No daily updates yet to summarize." });
+    }
+
+    const summary = await summarizeProject(projCheck.rows[0], reportsResult.rows);
+    return res.json({ summary, updatesCount: reportsResult.rows.length });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: err.message || "Could not generate summary" });
+  }
+}
+
+module.exports = { createReport, getReportsByProject, deleteReport, getProjectSummary };
