@@ -1,0 +1,53 @@
+/**
+ * Run with: npm run migrate
+ * Creates the core tables needed for multi-tenant auth + role management.
+ * Safe to re-run (uses IF NOT EXISTS).
+ */
+const pool = require("./db");
+
+const createTablesQuery = `
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- Each construction company is a tenant
+CREATE TABLE IF NOT EXISTS companies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(150) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Roles: admin (company owner/MD), project_manager, site_engineer
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  full_name VARCHAR(150) NOT NULL,
+  email VARCHAR(150) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'project_manager', 'site_engineer')),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_company_id ON users(company_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Placeholder for the next phase (projects / sites), kept minimal for now
+CREATE TABLE IF NOT EXISTS projects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name VARCHAR(150) NOT NULL,
+  location VARCHAR(200),
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
+(async () => {
+  try {
+    await pool.query(createTablesQuery);
+    console.log("Migration complete: companies, users, projects tables ready.");
+    process.exit(0);
+  } catch (err) {
+    console.error("Migration failed:", err);
+    process.exit(1);
+  }
+})();
