@@ -55,6 +55,38 @@ CREATE TABLE IF NOT EXISTS daily_reports (
 
 CREATE INDEX IF NOT EXISTS idx_daily_reports_project_id ON daily_reports(project_id);
 CREATE INDEX IF NOT EXISTS idx_daily_reports_entry_date ON daily_reports(entry_date);
+
+-- Laborers working on a project
+CREATE TABLE IF NOT EXISTS laborers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  full_name VARCHAR(150) NOT NULL,
+  phone VARCHAR(30),
+  trade VARCHAR(100),
+  daily_wage NUMERIC(10, 2),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_laborers_project_id ON laborers(project_id);
+
+-- One attendance row per laborer per date
+CREATE TABLE IF NOT EXISTS attendance_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  laborer_id UUID NOT NULL REFERENCES laborers(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  attendance_date DATE NOT NULL,
+  status VARCHAR(10) NOT NULL CHECK (status IN ('present', 'absent', 'half_day', 'leave')),
+  marked_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (laborer_id, attendance_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attendance_project_date ON attendance_records(project_id, attendance_date);
 `;
 
 (async () => {

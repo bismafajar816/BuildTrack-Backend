@@ -1,7 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const pool = require("../config/db");
-const { summarizeProject } = require("../services/aiSummaryService");
+const { summarizeProject, translateToUrdu, summarizeProjectBilingual } = require("../services/aiSummaryService");
 
 /**
  * Creates a daily update for a project. Body is multipart/form-data:
@@ -133,10 +133,84 @@ async function deleteReport(req, res) {
 }
 
 /**
- * Generates an AI summary of a project's daily updates using GLM-4V-9B.
- * Sends all text notes plus (up to 6) site photos to the model.
+ * Generates an AI summary of a project's daily updates.
+ * Supports language parameter: ?lang=urdu or ?lang=bilingual
+ * Default: English only
  */
 async function getProjectSummary(req, res) {
+  const { projectId } = req.params;
+  const { companyId } = req.user;
+  const { lang } = req.query;
+
+  try {
+    // Verify project exists and belongs to user's company
+    const projCheck = await pool.query(
+      "SELECT id, name, location FROM projects WHERE id = $1 AND company_id = $2",
+      [projectId, companyId]
+    );
+    if (projCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    // Get all reports for the project
+    const reportsResult = await pool.query(
+      `SELECT entry_type, content, image_path, entry_date
+       FROM daily_reports
+       WHERE project_id = $1
+       ORDER BY entry_date DESC, created_at DESC`,
+      [projectId]
+    );
+
+    if (reportsResult.rows.length === 0) {
+      return res.status(400).json({ message: "No daily updates yet to summarize." });
+    }
+
+    const project = projCheck.rows[0];
+    const reports = reportsResult.rows;
+
+    // Handle different language options
+    if (lang === "bilingual") {
+      const summaries = await summarizeProjectBilingual(project, reports);
+      return res.json({
+        summary: summaries.english,
+        english: summaries.english,
+        urdu: summaries.urdu,
+        updatesCount: reports.length
+      });
+    } else if (lang === "urdu") {
+      const englishSummary = await summarizeProject(project, reports);
+      let urduSummary = null;
+      try {
+        urduSummary = await translateToUrdu(englishSummary);
+      } catch (err) {
+        console.error("Urdu translation error:", err);
+      }
+      return res.json({
+        summary: urduSummary || englishSummary,
+        english: englishSummary,
+        urdu: urduSummary,
+        updatesCount: reports.length
+      });
+    } else {
+      const summary = await summarizeProject(project, reports);
+      return res.json({
+        summary,
+        english: summary,
+        updatesCount: reports.length
+      });
+    }
+  } catch (err) {
+    console.error("Error generating project summary:", err);
+    return res.status(500).json({ 
+      message: err.message || "Could not generate summary"
+    });
+  }
+}
+
+/**
+ * Generates Urdu-only summary
+ */
+async function getProjectSummaryUrdu(req, res) {
   const { projectId } = req.params;
   const { companyId } = req.user;
 
@@ -161,12 +235,82 @@ async function getProjectSummary(req, res) {
       return res.status(400).json({ message: "No daily updates yet to summarize." });
     }
 
-    const summary = await summarizeProject(projCheck.rows[0], reportsResult.rows);
-    return res.json({ summary, updatesCount: reportsResult.rows.length });
+    const project = projCheck.rows[0];
+    const reports = reportsResult.rows;
+
+    // Generate English first, then translate to Urdu
+    const englishSummary = await summarizeProject(project, reports);
+    let urduSummary = null;
+    try {
+      urduSummary = await translateToUrdu(englishSummary);
+    } catch (err) {
+      console.error("Urdu translation failed:", err);
+    }
+
+    return res.json({
+      summary: urduSummary || englishSummary,
+      english: englishSummary,
+      urdu: urduSummary,
+      updatesCount: reports.length
+    });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message || "Could not generate summary" });
+    console.error("Error generating Urdu summary:", err);
+    return res.status(500).json({ 
+      message: err.message || "Could not generate Urdu summary"
+    });
   }
 }
 
-module.exports = { createReport, getReportsByProject, deleteReport, getProjectSummary };
+/**
+ * Generates bilingual (English + Urdu) summary
+ */
+async function getProjectSummaryBilingual(req, res) {
+  const { projectId } = req.params;
+  const { companyId } = req.user;
+
+  try {
+    const projCheck = await pool.query(
+      "SELECT id, name, location FROM projects WHERE id = $1 AND company_id = $2",
+      [projectId, companyId]
+    );
+    if (projCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    const reportsResult = await pool.query(
+      `SELECT entry_type, content, image_path, entry_date
+       FROM daily_reports
+       WHERE project_id = $1
+       ORDER BY entry_date DESC, created_at DESC`,
+      [projectId]
+    );
+
+    if (reportsResult.rows.length === 0) {
+      return res.status(400).json({ message: "No daily updates yet to summarize." });
+    }
+
+    const project = projCheck.rows[0];
+    const reports = reportsResult.rows;
+    const summaries = await summarizeProjectBilingual(project, reports);
+
+    return res.json({
+      summary: summaries.english,
+      urdu: summaries.urdu,
+      updatesCount: reports.length
+    });
+  } catch (err) {
+    console.error("Error generating bilingual summary:", err);
+    return res.status(500).json({ 
+      message: err.message || "Could not generate bilingual summary"
+    });
+  }
+}
+
+module.exports = { 
+  createReport, 
+  getReportsByProject, 
+  deleteReport, 
+  getProjectSummary,
+  getProjectSummaryUrdu,
+  getProjectSummaryBilingual
+};
