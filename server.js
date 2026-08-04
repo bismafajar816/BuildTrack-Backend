@@ -8,6 +8,7 @@ const projectRoutes = require("./routes/projectRoutes");
 const reportRoutes = require("./routes/reportRoutes");
 const laborerRoutes = require("./routes/laborerRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
 
 const app = express();
 
@@ -31,6 +32,7 @@ app.use("/api/projects", projectRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/laborers", laborerRoutes);
 app.use("/api/attendance", attendanceRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 // 404 handler
 app.use((req, res) => {
