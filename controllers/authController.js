@@ -4,7 +4,7 @@ const pool = require("../config/db");
 
 function signToken(user) {
   return jwt.sign(
-    { id: user.id, companyId: user.company_id, role: user.role },
+    { id: user.id, companyId: user.company_id, role: user.role, projectId: user.project_id || null },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
   );
@@ -15,44 +15,25 @@ function sanitizeUser(user) {
   return safe;
 }
 
-function validateEmail(email) {
-  return typeof email === "string" && email.trim().includes("@");
-}
-
-function validatePassword(password) {
-  return (
-    typeof password === "string" &&
-    password.length >= 8 &&
-    /\d/.test(password) &&
-    /[^A-Za-z0-9]/.test(password)
-  );
-}
-
 /**
  * Registers a new COMPANY along with its first user, who becomes the admin.
  * This is the signup flow for a construction company joining BuildTrack.
  */
 async function registerCompany(req, res) {
   const { companyName, fullName, email, password } = req.body;
-  const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
 
-  if (!companyName || !fullName || !normalizedEmail || !password) {
+  if (!companyName || !fullName || !email || !password) {
     return res.status(400).json({ message: "All fields are required" });
   }
-  if (!validateEmail(normalizedEmail)) {
-    return res.status(400).json({ message: "Email must contain an '@' sign" });
-  }
-  if (!validatePassword(password)) {
-    return res.status(400).json({
-      message: "Password must be at least 8 characters long and include at least one digit and one special character",
-    });
+  if (password.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters" });
   }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    const existing = await client.query("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const existing = await client.query("SELECT id FROM users WHERE email = $1", [email]);
     if (existing.rows.length > 0) {
       await client.query("ROLLBACK");
       return res.status(409).json({ message: "An account with this email already exists" });
@@ -69,7 +50,7 @@ async function registerCompany(req, res) {
     const userResult = await client.query(
       `INSERT INTO users (company_id, full_name, email, password_hash, role)
        VALUES ($1, $2, $3, $4, 'admin') RETURNING *`,
-      [company.id, fullName, normalizedEmail, passwordHash]
+      [company.id, fullName, email, passwordHash]
     );
     const user = userResult.rows[0];
 
@@ -91,13 +72,12 @@ async function registerCompany(req, res) {
 }
 
 /**
- * Admin/PM invites a new team member (project_manager or site_engineer)
- * into their own company. Requires an authenticated admin.
+ * Admin invites a new team member (project_manager or site_engineer) into
+ * their own company, assigned to one of their company's projects.
  */
 async function inviteUser(req, res) {
-  const { fullName, email, password, role } = req.body;
+  const { fullName, email, password, role, project_id } = req.body;
   const { companyId, role: requesterRole } = req.user;
-  const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
 
   if (requesterRole !== "admin") {
     return res.status(403).json({ message: "Only an admin can add team members" });
@@ -105,29 +85,35 @@ async function inviteUser(req, res) {
   if (!["project_manager", "site_engineer"].includes(role)) {
     return res.status(400).json({ message: "Role must be project_manager or site_engineer" });
   }
-  if (!fullName || !normalizedEmail || !password) {
+  if (!fullName || !email || !password) {
     return res.status(400).json({ message: "All fields are required" });
   }
-  if (!validateEmail(normalizedEmail)) {
-    return res.status(400).json({ message: "Email must contain an '@' sign" });
-  }
-  if (!validatePassword(password)) {
-    return res.status(400).json({
-      message: "Password must be at least 8 characters long and include at least one digit and one special character",
-    });
+  if (!project_id) {
+    return res.status(400).json({ message: "Please select a project for this team member" });
   }
 
   try {
-    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    // The chosen project must belong to the admin's own company —
+    // admins can only staff projects that exist in their company.
+    const projCheck = await pool.query(
+      "SELECT id FROM projects WHERE id = $1 AND company_id = $2",
+      [project_id, companyId]
+    );
+    if (projCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Selected project was not found in your company" });
+    }
+
+    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ message: "An account with this email already exists" });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      `INSERT INTO users (company_id, full_name, email, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [companyId, fullName, normalizedEmail, passwordHash, role]
+      `INSERT INTO users (company_id, full_name, email, password_hash, role, project_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [companyId, fullName, email, passwordHash, role, project_id]
     );
 
     return res.status(201).json({ user: sanitizeUser(result.rows[0]) });
@@ -137,24 +123,43 @@ async function inviteUser(req, res) {
   }
 }
 
-async function login(req, res) {
-  const { email, password } = req.body;
-  const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+/**
+ * Lists everyone in the admin's company, with their assigned project name.
+ * Admin-only — this powers the Team page.
+ */
+async function getTeam(req, res) {
+  const { companyId, role } = req.user;
 
-  if (!normalizedEmail || !password) {
-    return res.status(400).json({ message: "Email and password are required" });
-  }
-  if (!validateEmail(normalizedEmail)) {
-    return res.status(400).json({ message: "Email must contain an '@' sign" });
-  }
-  if (!validatePassword(password)) {
-    return res.status(400).json({
-      message: "Password must be at least 8 characters long and include at least one digit and one special character",
-    });
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Only an admin can view the team" });
   }
 
   try {
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
+    const result = await pool.query(
+      `SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.created_at,
+              p.id AS project_id, p.name AS project_name
+       FROM users u
+       LEFT JOIN projects p ON p.id = u.project_id
+       WHERE u.company_id = $1
+       ORDER BY (u.role = 'admin') DESC, u.full_name`,
+      [companyId]
+    );
+    return res.json({ team: result.rows });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error while loading the team" });
+  }
+}
+
+async function login(req, res) {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
+  }
+
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
     const user = result.rows[0];
 
     if (!user || !user.is_active) {
@@ -187,4 +192,4 @@ async function getMe(req, res) {
   }
 }
 
-module.exports = { registerCompany, inviteUser, login, getMe };
+module.exports = { registerCompany, inviteUser, login, getMe, getTeam };

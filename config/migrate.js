@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Team members (project_manager / site_engineer) are assigned to one project.
+-- Admins oversee the whole company, so their project_id stays NULL.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_users_project_id ON users(project_id);
+
 -- Daily site updates: either a text note or a photo (with optional caption)
 CREATE TABLE IF NOT EXISTS daily_reports (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

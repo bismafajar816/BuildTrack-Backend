@@ -5,17 +5,24 @@ const { protect } = require("../middleware/authMiddleware");
 const { authorize } = require("../middleware/roleMiddleware");
 
 /**
- * This file is a starting stub for Phase 2 (project management module).
- * It demonstrates the pattern: protect -> authorize -> tenant-scoped query.
+ * Admins see every project in their company. project_manager and
+ * site_engineer only see the single project they're assigned to
+ * (req.user.projectId, taken from their JWT).
  */
-
-// Any authenticated user in the company can view its projects
 router.get("/", protect, async (req, res) => {
   try {
-    const result = await pool.query(
-      "SELECT * FROM projects WHERE company_id = $1 ORDER BY created_at DESC",
-      [req.user.companyId]
-    );
+    let result;
+    if (req.user.role === "admin") {
+      result = await pool.query(
+        "SELECT * FROM projects WHERE company_id = $1 ORDER BY created_at DESC",
+        [req.user.companyId]
+      );
+    } else {
+      result = await pool.query(
+        "SELECT * FROM projects WHERE company_id = $1 AND id = $2 ORDER BY created_at DESC",
+        [req.user.companyId, req.user.projectId]
+      );
+    }
     res.json({ projects: result.rows });
   } catch (err) {
     console.error(err);
@@ -23,8 +30,12 @@ router.get("/", protect, async (req, res) => {
   }
 });
 
-// Any authenticated user can view a single project (tenant-scoped)
+// Same rule for a single project: non-admins can only fetch their own project
 router.get("/:id", protect, async (req, res) => {
+  if (req.user.role !== "admin" && req.params.id !== req.user.projectId) {
+    return res.status(403).json({ message: "You don't have access to this project" });
+  }
+
   try {
     const result = await pool.query(
       "SELECT * FROM projects WHERE id = $1 AND company_id = $2",
@@ -40,8 +51,8 @@ router.get("/:id", protect, async (req, res) => {
   }
 });
 
-// Only admin or project_manager can create a new project
-router.post("/", protect, authorize("admin", "project_manager"), async (req, res) => {
+// Only admin creates projects — non-admins are assigned to one via Team, not self-serve
+router.post("/", protect, authorize("admin"), async (req, res) => {
   const { name, location } = req.body;
   if (!name) return res.status(400).json({ message: "Project name is required" });
 
