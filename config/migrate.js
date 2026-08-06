@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Project lifecycle: 'active' while ongoing, 'completed' once finished,
+-- 'deactivated' if paused/shelved without being finished.
+-- completed_at / deactivated_at record when each transition happened.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_status_check;
+ALTER TABLE projects ADD CONSTRAINT projects_status_check
+  CHECK (status IN ('active', 'deactivated', 'completed'));
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+
 -- Team members (project_manager / site_engineer) are assigned to one project.
 -- Admins oversee the whole company, so their project_id stays NULL.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE SET NULL;

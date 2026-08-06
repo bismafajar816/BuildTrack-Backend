@@ -69,4 +69,99 @@ router.post("/", protect, authorize("admin"), async (req, res) => {
   }
 });
 
+// Edit a project's name/location — admin only
+router.patch("/:id", protect, authorize("admin"), async (req, res) => {
+  const { name, location } = req.body;
+
+  if (name !== undefined && !name.trim()) {
+    return res.status(400).json({ message: "Project name can't be empty" });
+  }
+
+  try {
+    const existing = await pool.query(
+      "SELECT id FROM projects WHERE id = $1 AND company_id = $2",
+      [req.params.id, req.user.companyId]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    const result = await pool.query(
+      `UPDATE projects
+       SET name = COALESCE($1, name),
+           location = COALESCE($2, location)
+       WHERE id = $3 AND company_id = $4
+       RETURNING *`,
+      [name?.trim() || null, location ?? null, req.params.id, req.user.companyId]
+    );
+
+    res.json({ project: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error while updating project" });
+  }
+});
+
+// Mark a project as finished — admin only. Kept in the system (not deleted),
+// just flagged so the UI can show it as done and filter it out of active views.
+router.patch("/:id/finish", protect, authorize("admin"), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = 'completed', completed_at = now(), deactivated_at = NULL
+       WHERE id = $1 AND company_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.companyId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+    res.json({ message: "Project marked as finished", project: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error while finishing project" });
+  }
+});
+
+// Deactivate a project — admin only. For pausing/shelving work without
+// marking it complete (different from /finish, which means "done").
+router.patch("/:id/deactivate", protect, authorize("admin"), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = 'deactivated', deactivated_at = now(), completed_at = NULL
+       WHERE id = $1 AND company_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.companyId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+    res.json({ message: "Project deactivated", project: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error while deactivating project" });
+  }
+});
+
+// Reopen a project — works from either 'completed' or 'deactivated' back to 'active'
+router.patch("/:id/reactivate", protect, authorize("admin"), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = 'active', completed_at = NULL, deactivated_at = NULL
+       WHERE id = $1 AND company_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.companyId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+    res.json({ message: "Project reactivated", project: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error while reactivating project" });
+  }
+});
+
 module.exports = router;
