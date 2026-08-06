@@ -151,6 +151,127 @@ async function getTeam(req, res) {
   }
 }
 
+/**
+ * Updates a team member's name, role, and/or assigned project. Admin-only,
+ * scoped to the admin's own company. Can't be used to edit the admin's own
+ * account or to promote/demote anyone into or out of the admin role — that
+ * boundary is deliberately not editable through this endpoint.
+ */
+async function updateTeamMember(req, res) {
+  const { id } = req.params;
+  const { full_name, role, project_id } = req.body;
+  const { companyId, id: requesterId } = req.user;
+
+  if (id === requesterId) {
+    return res.status(400).json({ message: "You can't edit your own account here" });
+  }
+  if (role && !["project_manager", "site_engineer"].includes(role)) {
+    return res.status(400).json({ message: "Role must be project_manager or site_engineer" });
+  }
+  if (full_name !== undefined && !full_name.trim()) {
+    return res.status(400).json({ message: "Full name can't be empty" });
+  }
+
+  try {
+    const existing = await pool.query("SELECT * FROM users WHERE id = $1 AND company_id = $2", [
+      id,
+      companyId,
+    ]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ message: "Team member not found" });
+    }
+    if (existing.rows[0].role === "admin") {
+      return res.status(400).json({ message: "Admin accounts can't be edited here" });
+    }
+
+    // If reassigning to a different project, it must belong to this company.
+    if (project_id) {
+      const projCheck = await pool.query(
+        "SELECT id FROM projects WHERE id = $1 AND company_id = $2",
+        [project_id, companyId]
+      );
+      if (projCheck.rows.length === 0) {
+        return res.status(404).json({ message: "Selected project was not found in your company" });
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET full_name = COALESCE($1, full_name),
+           role = COALESCE($2, role),
+           project_id = COALESCE($3, project_id)
+       WHERE id = $4 AND company_id = $5
+       RETURNING *`,
+      [full_name?.trim() || null, role || null, project_id || null, id, companyId]
+    );
+
+    return res.json({ user: sanitizeUser(result.rows[0]) });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error while updating team member" });
+  }
+}
+
+/**
+ * Deactivates a team member (soft delete). This immediately blocks their
+ * login (see `login` below), while preserving their historical reports and
+ * attendance markings — a hard DELETE would either fail on the foreign key
+ * references or silently orphan that history, neither of which we want.
+ */
+async function deactivateTeamMember(req, res) {
+  const { id } = req.params;
+  const { companyId, id: requesterId } = req.user;
+
+  if (id === requesterId) {
+    return res.status(400).json({ message: "You can't remove your own account" });
+  }
+
+  try {
+    const existing = await pool.query("SELECT * FROM users WHERE id = $1 AND company_id = $2", [
+      id,
+      companyId,
+    ]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ message: "Team member not found" });
+    }
+    if (existing.rows[0].role === "admin") {
+      return res.status(400).json({ message: "Admin accounts can't be removed here" });
+    }
+
+    const result = await pool.query(
+      "UPDATE users SET is_active = false WHERE id = $1 AND company_id = $2 RETURNING *",
+      [id, companyId]
+    );
+
+    return res.json({ message: "Team member removed", user: sanitizeUser(result.rows[0]) });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error while removing team member" });
+  }
+}
+
+/**
+ * Restores a previously-removed team member's access.
+ */
+async function reactivateTeamMember(req, res) {
+  const { id } = req.params;
+  const { companyId } = req.user;
+
+  try {
+    const result = await pool.query(
+      "UPDATE users SET is_active = true WHERE id = $1 AND company_id = $2 RETURNING *",
+      [id, companyId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Team member not found" });
+    }
+    return res.json({ message: "Team member reactivated", user: sanitizeUser(result.rows[0]) });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error while reactivating team member" });
+  }
+}
+
 async function login(req, res) {
   const { email, password } = req.body;
 
@@ -192,4 +313,13 @@ async function getMe(req, res) {
   }
 }
 
-module.exports = { registerCompany, inviteUser, login, getMe, getTeam };
+module.exports = {
+  registerCompany,
+  inviteUser,
+  login,
+  getMe,
+  getTeam,
+  updateTeamMember,
+  deactivateTeamMember,
+  reactivateTeamMember,
+};
