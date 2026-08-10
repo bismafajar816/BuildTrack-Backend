@@ -1,7 +1,51 @@
 const path = require("path");
-const fs = require("fs");
+const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const pool = require("../config/db");
+const r2Client = require("../config/r2");
+const { slugify } = require("../utils/slugify");
 const { summarizeProject, translateToUrdu, summarizeProjectBilingual } = require("../services/aiSummaryService");
+
+/**
+ * Uploads a file buffer to Cloudflare R2 and returns its public URL.
+ * Key layout: <project-slug>/<timestamp>-<random>.<ext>, mirroring the old
+ * local folder-per-project structure but as an object key prefix instead.
+ */
+async function uploadImageToR2(file, projectName) {
+  const folder = slugify(projectName);
+  const ext = path.extname(file.originalname) || ".jpg";
+  const key = `${folder}/${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+
+  await r2Client.send(
+    new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    })
+  );
+
+  return { key, url: `${process.env.R2_PUBLIC_URL_BASE}/${key}` };
+}
+
+/**
+ * Deletes an object from R2 given its full public URL (as stored in
+ * daily_reports.image_path), by stripping the known public URL prefix
+ * back down to the object key. Best-effort — logs and continues on failure
+ * rather than blocking the DB delete.
+ */
+async function deleteImageFromR2(imageUrl) {
+  try {
+    const prefix = `${process.env.R2_PUBLIC_URL_BASE}/`;
+    if (!imageUrl.startsWith(prefix)) return;
+    const key = imageUrl.slice(prefix.length);
+
+    await r2Client.send(
+      new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+    );
+  } catch (err) {
+    console.warn(`Could not delete R2 object for ${imageUrl}:`, err.message);
+  }
+}
 
 /**
  * Creates a daily update for a project. Body is multipart/form-data:
@@ -12,15 +56,13 @@ const { summarizeProject, translateToUrdu, summarizeProjectBilingual } = require
  * Image entries: an uploaded file is required; content (caption) is optional.
  */
 async function createReport(req, res) {
-  const { project_id, entry_type, content, entry_date } = req.body;
+  const { project_id, entry_type, content, entry_date, project_name } = req.body;
   const { companyId, id: userId } = req.user;
 
   if (!project_id || !entry_type) {
-    if (req.file) fs.unlink(req.file.path, () => {});
     return res.status(400).json({ message: "project_id and entry_type are required" });
   }
   if (!["text", "image"].includes(entry_type)) {
-    if (req.file) fs.unlink(req.file.path, () => {});
     return res.status(400).json({ message: "entry_type must be 'text' or 'image'" });
   }
 
@@ -31,7 +73,6 @@ async function createReport(req, res) {
       [project_id, companyId]
     );
     if (projCheck.rows.length === 0) {
-      if (req.file) fs.unlink(req.file.path, () => {});
       return res.status(404).json({ message: "Project not found" });
     }
 
@@ -41,8 +82,8 @@ async function createReport(req, res) {
       if (!req.file) {
         return res.status(400).json({ message: "An image file is required for photo updates" });
       }
-      // Store a path relative to the backend root, e.g. uploads/model-town/12345.jpg
-      imagePath = path.relative(path.join(__dirname, ".."), req.file.path).replace(/\\/g, "/");
+      const { url } = await uploadImageToR2(req.file, project_name);
+      imagePath = url; // store the full public R2 URL
     } else {
       if (!content || !content.trim()) {
         return res.status(400).json({ message: "Text content is required for text updates" });
@@ -58,7 +99,6 @@ async function createReport(req, res) {
 
     return res.status(201).json({ report: result.rows[0] });
   } catch (err) {
-    if (req.file) fs.unlink(req.file.path, () => {});
     console.error(err);
     return res.status(500).json({ message: "Server error while saving the update" });
   }
@@ -98,7 +138,7 @@ async function getReportsByProject(req, res) {
 
 /**
  * Deletes a daily update. Only the user who created it, or an admin,
- * may delete it. If it was an image entry, the file on disk is removed too.
+ * may delete it. If it was an image entry, the object is removed from R2 too.
  */
 async function deleteReport(req, res) {
   const { id } = req.params;
@@ -121,8 +161,7 @@ async function deleteReport(req, res) {
     await pool.query("DELETE FROM daily_reports WHERE id = $1", [id]);
 
     if (report.entry_type === "image" && report.image_path) {
-      const fullPath = path.join(__dirname, "..", report.image_path);
-      fs.unlink(fullPath, () => {}); // best-effort; ignore if already missing
+      await deleteImageFromR2(report.image_path);
     }
 
     return res.json({ message: "Update deleted" });

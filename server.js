@@ -1,6 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 require("dotenv").config();
 
 const authRoutes = require("./routes/authRoutes");
@@ -19,9 +18,6 @@ app.use(
   })
 );
 app.use(express.json());
-
-// Serve uploaded images, e.g. GET /uploads/model-town/12345.jpg
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "BuildTrack API" });

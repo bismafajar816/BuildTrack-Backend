@@ -15,25 +15,6 @@ const WORKING_MODELS = [
   "deepseek-r1-distill-llama-70b", // Reasoning model
 ];
 
-function mimeTypeFor(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext === ".png") return "image/png";
-  if (ext === ".webp") return "image/webp";
-  if (ext === ".heic" || ext === ".heif") return "image/heic";
-  return "image/jpeg";
-}
-
-function imageToDataUrl(relativeImagePath) {
-  try {
-    const fullPath = path.join(__dirname, "..", relativeImagePath);
-    const buffer = fs.readFileSync(fullPath);
-    return `data:${mimeTypeFor(relativeImagePath)};base64,${buffer.toString("base64")}`;
-  } catch (err) {
-    console.warn(`Could not read image for summary: ${relativeImagePath}`);
-    return null;
-  }
-}
-
 function buildLogText(project, reports) {
   const lines = reports
     .slice()
