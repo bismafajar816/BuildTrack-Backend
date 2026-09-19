@@ -4,17 +4,13 @@ const path = require("path");
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = process.env.GROQ_API_URL || "https://api.groq.com/openai/v1/chat/completions";
 
-// Use the working text model as primary
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const GROQ_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
-// Currently working text models (as of 2026)
 const WORKING_MODELS = [
-  "llama-3.3-70b-versatile",   // Primary - confirmed working
-  "llama-3.1-8b-instant",      // Faster alternative
-  "gemma2-9b-it",              // Google's model
-  "deepseek-r1-distill-llama-70b", // Reasoning model
+  "openai/gpt-oss-120b",   // Primary — replacement for llama-3.3-70b-versatile
+  "openai/gpt-oss-20b",    // Faster alternative — replacement for llama-3.1-8b-instant
+  "qwen/qwen3-32b",        // Additional fallback
 ];
-
 function buildLogText(project, reports) {
   const lines = reports
     .slice()

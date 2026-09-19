@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
+const { sendWelcomeEmail } = require("../services/emailService");
 
 function signToken(user) {
   return jwt.sign(
@@ -96,7 +97,7 @@ async function inviteUser(req, res) {
     // The chosen project must belong to the admin's own company —
     // admins can only staff projects that exist in their company.
     const projCheck = await pool.query(
-      "SELECT id FROM projects WHERE id = $1 AND company_id = $2",
+      "SELECT id, name FROM projects WHERE id = $1 AND company_id = $2",
       [project_id, companyId]
     );
     if (projCheck.rows.length === 0) {
@@ -108,6 +109,9 @@ async function inviteUser(req, res) {
       return res.status(409).json({ message: "An account with this email already exists" });
     }
 
+    const companyResult = await pool.query("SELECT name FROM companies WHERE id = $1", [companyId]);
+    const companyName = companyResult.rows[0]?.name || "your company";
+
     const passwordHash = await bcrypt.hash(password, 10);
     const result = await pool.query(
       `INSERT INTO users (company_id, full_name, email, password_hash, role, project_id)
@@ -116,7 +120,25 @@ async function inviteUser(req, res) {
       [companyId, fullName, email, passwordHash, role, project_id]
     );
 
-    return res.status(201).json({ user: sanitizeUser(result.rows[0]) });
+    // Email delivery is best-effort: the account is already created at this
+    // point, so a failed email shouldn't undo it or fail the whole request.
+    // The admin is told via `emailSent` so they can share credentials manually.
+    let emailSent = false;
+    try {
+      await sendWelcomeEmail({
+        to: email,
+        fullName,
+        companyName,
+        role,
+        tempPassword: password,
+        projectName: projCheck.rows[0].name,
+      });
+      emailSent = true;
+    } catch (emailErr) {
+      console.error("Failed to send welcome email:", emailErr);
+    }
+
+    return res.status(201).json({ user: sanitizeUser(result.rows[0]), emailSent });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Server error while adding team member" });
